@@ -1,67 +1,88 @@
 bits 16
 _begin:
-org 0x8000
-jmp _start
-
-times 3 - ($ - $$) db 0
-
-; FAT32 BPB
-bpb:
-.identifier:
-db "MSWIN4.1"
-.bytes_per_sector:
-dw 512
-.ignored:
-db 0
-dw 0
-.FAT_count:
-db 2
-.root_directory_entries:
-dw 0
-.logical_volume_sectors:
-dw 0
-.ignored1:
-db 0
-dw 0
-dw 0
-dw 0
-.hidden_sectors:
-dd (_end - _begin) / 512 + 1
-.large_sector_count:
-dd 0
-.sectord_per_FAT:
-dd 0
-.flags:
-dw 0
-.FAT_version:
-dw 0
-.root_cluster_number:
-dd 2
-.FSInfo_sector:
-dw 2
-.ignored2:
-dw 0
-.reserved:
-times 12 db 0
-.drive_number:
-db 0
-.reserved1:
-db 0
-.signature:
-db 0x28
-.ignored3:
-dd 0
-.volume_label:
-db "EFI        "
-.string_identifier:
-db "FAT32   "
+org 0x8200
 
 _start:
-    sub eax, 0x10
-    mov dword [efi_sector], eax
-    mov dword [read_sectors], ebx
+    mov byte [disk.drive], dl
 
-error:
+    ; Enable A20
+    mov ax, 0x2403
+    int 0x15
+    mov ebp, bios_error.a20
+    jc bios_error
+    cmp ah, 0
+    jne bios_error
+    
+    mov ax, 0x2402
+    int 0x15
+    mov ebp, bios_error.a20
+    jc bios_error
+    cmp ah, 0
+    jne bios_error
+
+    cmp al, 1
+    je .a20_active
+
+    mov ax, 0x2401
+    int 0x15
+    mov ebp, bios_error.a20
+    jc bios_error
+    cmp ah, 0
+    jne bios_error
+
+.a20_active:
+    ; Get memory map
+    mov di, memory_map
+    xor ebx, ebx
+    mov edx, 0x534d4150
+    mov eax, 0xe820
+
+    mov eax, 0xe820
+    mov ecx, 024
+    int 0x15
+    mov ebp, bios_error.memory_map
+    jc bios_error
+    
+.get_memory_map:
+    mov eax, 0xe820
+    mov ecx, 024
+    int 0x15
+    add di, 24
+    or bx, bx
+    jz .enter_protected_mode
+    jnc .get_memory_map
+
+.enter_protected_mode:
+    xchg bx, bx
+    ; Enable protected mode
+
+    cli
+
+    in al, 0x70
+    or al, 0x80
+    out 0x70, al
+
+    sgdt [GDT.bios_ptr]
+    lgdt [GDT.ptr]
+
+    mov ax, cs
+    mov word [GDT.bios_cs], ax
+    
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+
+    jmp 0x08:_protected_start
+
+bios_read_sectors:
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+bios_error:
     xor ch, ch
     mov cl, byte [ebp]
     inc bp
@@ -76,16 +97,65 @@ error:
     hlt
     jmp .forever
 
+.a20: db 29, "Could not enable the A20 line"
+.memory_map: db 37, "Could not get the system's memory map"
 
-efi_sector: dd 0
+disk:
+.drive: db 0
 
-; eax - lba to read
-; ebx - pointer to destination
-; ecx - number of sectors to read
-; mangles - eax, ebx, ecx, edx, edi, esi, bp
-read_sectors: dd 0
+memory_map:
+times 16 * 24 db 0
 
-times 510 - ($ - $$) db 0
-dw 0xaa55
+align 16
+GDT:
+.null: dq 0
+.kcode32:
+    dw 0xffff
+    dw 0
+    db 0
+    db 0b10011010
+    db 0b11001111
+    db 0
+.kdata32:
+    dw 0xffff
+    dw 0
+    db 0
+    db 0b10010010
+    db 0b11001111
+    db 0
+.kcode16:
+    dw 0xffff
+    dw 0
+    db 0
+    db 0b10011010
+    db 0b00001111
+    db 0
+.kdata16:
+    dw 0xffff
+    dw 0
+    db 0
+    db 0b10010010
+    db 0b00001111
+    db 0
+.ptr:
+    dw GDT.ptr - GDT - 1
+    dd GDT
+.bios_ptr:
+    dw 0
+    dd 0
+.bios_cs:
+    dw 0
 
-_end:
+bits 32
+_protected_start:
+    xchg bx, bx
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+    xor eax, eax
+    mov eax, dword [eax]
+    nop
